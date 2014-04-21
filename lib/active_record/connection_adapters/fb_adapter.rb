@@ -11,18 +11,19 @@ module Arel
     class FB < Arel::Visitors::ToSql
     protected
 
-      def visit_Arel_Nodes_SelectStatement o, *a
+      def visit_Arel_Nodes_SelectStatement(o, *a)
         select_core = o.cores.map { |x| visit_Arel_Nodes_SelectCore(x, *a) }.join
-        select_core.sub!(/^\s*SELECT/i, "SELECT #{visit(o.offset)}") if o.offset && !o.limit
+        select_core.sub! /^\s*SELECT/i, "SELECT #{visit(o.offset)}" if o.offset && !o.limit
+        select_core.sub! /^\s*SELECT/i, "SELECT #{visit(o.limit)}" if o.limit && !o.offset
+        select_core.sub! /^\s*SELECT/i, "SELECT #{limit_offset(o)}" if o.limit && o.offset
+
         [
           select_core,
-          ("ORDER BY #{o.orders.map { |x| visit(x) }.join(', ')}" unless o.orders.empty?),
-          (limit_offset(o) if o.limit && o.offset),
-          (visit(o.limit) if o.limit && !o.offset),
+          ("ORDER BY #{o.orders.map { |x| visit(x) }.join(', ')}" unless o.orders.empty?)
         ].compact.join ' '
       end
 
-      def visit_Arel_Nodes_UpdateStatement o, *a
+      def visit_Arel_Nodes_UpdateStatement(o, *a)
         [
           "UPDATE #{visit o.relation}",
           ("SET #{o.values.map { |value| visit(value) }.join ', '}" unless o.values.empty?),
@@ -31,17 +32,17 @@ module Arel
         ].compact.join ' '
       end
 
-      def visit_Arel_Nodes_Limit o, *a
-        "ROWS #{visit(o.expr)}"
+      def visit_Arel_Nodes_Limit(o, *a)
+        "FIRST #{visit o.expr}"
       end
 
-      def visit_Arel_Nodes_Offset o, *a
-        "SKIP #{visit(o.expr)}"
+      def visit_Arel_Nodes_Offset(o, *a)
+        "SKIP #{visit o.expr}"
       end
 
     private
       def limit_offset(o)
-        "ROWS #{visit(o.offset.expr) + 1} TO #{visit(o.offset.expr) + visit(o.limit.expr)}"
+        "#{visit o.offset} #{visit o.limit}"
       end
     end
   end
@@ -55,7 +56,7 @@ module ActiveRecord
       config = config.symbolize_keys.merge(:downcase_names => true)
       unless config.has_key?(:database)
         raise ArgumentError, "No database specified. Missing argument: database."
-      end      
+      end
       config[:database] = File.expand_path(config[:database]) if config[:host] =~ /localhost/i
       config[:database] = "#{config[:host]}/#{config[:port] || 3050}:#{config[:database]}" if config[:host]
       require 'fb'
@@ -76,7 +77,7 @@ module ActiveRecord
       def column_types
         {}
       end
-      
+
       def columns
         self.any? ? self.first.keys : []
       end
@@ -257,9 +258,9 @@ module ActiveRecord
       @@boolean_domain = { :true => 1, :false => 0, :name => 'BOOLEAN', :type => 'integer' }
       cattr_accessor :boolean_domain
 
-      def initialize(connection, logger, config=nil)
+      def initialize(connection, logger, connection_params=nil)
         super(connection, logger)
-        @config = config
+        @connection_params = connection_params
         @visitor = Arel::Visitors::FB.new(self)
       end
 
@@ -343,7 +344,7 @@ module ActiveRecord
       # new connection with the database.
       def reconnect!
         disconnect!
-        @connection = Fb::Database.connect(@config)
+        @connection = Fb::Database.connect(@connection_params)
       end
 
       # Disconnects from the database if already connected. Otherwise, this
@@ -604,7 +605,7 @@ module ActiveRecord
           log(expand(sql, args), name) do
             result, rows = @connection.execute(sql, *args) { |cursor| [cursor.fields, cursor.fetchall] }
             if result.respond_to?(:map)
-              cols = result.map { |col| col.name } 
+              cols = result.map { |col| col.name }
               ActiveRecord::Result.new(cols, rows)
             else
               result
@@ -685,9 +686,9 @@ module ActiveRecord
         end
         sql
       end
-      
-      def default_sequence_name(table_name, column = nil)
-        "#{table_name.to_s[0, table_name_length - 4]}_seq"
+
+      def default_sequence_name(table_name, column=nil)
+        "#{table_name}_seq"
       end
 
       # Set the sequence to the max value of the table's column.
